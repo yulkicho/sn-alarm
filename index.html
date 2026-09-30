@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="코골이알람">
+<meta name="theme-color" content="#0b0f14">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<title>코골이 알람</title>
+<style>
+  :root {
+    --bg: #0b0f14; --card: #141a22; --line: #243040;
+    --text: #e6edf3; --muted: #8b98a5;
+    --accent: #4cc38a; --warn: #f5a524; --danger: #f2555a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  main { max-width: 520px; margin: 0 auto;
+    padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 32px); }
+  h1 { font-size: 20px; margin: 4px 0 16px; }
+  h2 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+  #status { font-size: 26px; font-weight: 700; }
+  #status.alarm { color: var(--danger); }
+  #status.listen { color: var(--accent); }
+  #sub { color: var(--muted); min-height: 1.5em; }
+  .stats { display: flex; gap: 24px; margin-top: 12px; }
+  .stats b { display: block; font-size: 22px; }
+  .stats span { color: var(--muted); font-size: 13px; }
+  canvas { width: 100%; height: 110px; display: block; margin-top: 12px; border-radius: 8px; background: #0e141b; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font: inherit; border: 0; border-radius: 12px; padding: 14px 16px; cursor: pointer;
+    background: #223041; color: var(--text); flex: 1; min-width: 120px; }
+  button.primary { background: var(--accent); color: #062014; font-weight: 700; }
+  button.stop { background: var(--danger); color: #fff; font-weight: 700; }
+  button:disabled { opacity: .4; }
+  .seg { display: flex; background: #0e141b; border-radius: 10px; padding: 3px; }
+  .seg button { min-width: 0; padding: 9px 4px; border-radius: 8px; background: transparent; color: var(--muted); }
+  .seg button.on { background: #223041; color: var(--text); font-weight: 600; }
+  label { display: block; margin: 14px 0 6px; color: var(--muted); font-size: 13px; }
+  input[type=range], select { width: 100%; }
+  select { font: inherit; padding: 8px; border-radius: 8px; background: #0e141b; color: var(--text); border: 1px solid var(--line); }
+  #notice { display: none; background: #3a2a0c; border: 1px solid var(--warn); color: #ffd58a; }
+  ul { margin: 0; padding-left: 18px; }
+  li { margin: 2px 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #sleep { position: fixed; inset: 0; background: #000; display: none; z-index: 10;
+    align-items: flex-end; justify-content: center; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 40px);
+    color: #2a2a2a; font-size: 13px; text-align: center; }
+  #sleep.flash { background: #2a0000; }
+</style>
+</head>
+<body>
+<main>
+  <h1>코골이 알람</h1>
+
+  <div class="card" id="notice"></div>
+
+  <div class="card">
+    <div id="status">대기 중</div>
+    <div id="sub">시작을 누르면 주변 소음을 5초간 잰 뒤 감지를 시작해요.</div>
+    <div class="stats">
+      <div><b id="count">0</b><span>코골이 감지</span></div>
+      <div><b id="elapsed">0:00</b><span>경과 시간</span></div>
+    </div>
+    <canvas id="meter"></canvas>
+    <div class="muted" style="margin-top:6px">초록 막대 = 소음 대비 저음 증가량 · 점선 = 감지 기준 · 위쪽 점 = 포착된 반복 소리</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button class="primary" id="btnStart">시작</button>
+      <button class="stop" id="btnStop" hidden>정지</button>
+      <button id="btnSleep" disabled>검은 화면</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>설정</h2>
+    <label>민감도</label>
+    <div class="seg" id="sens">
+      <button data-v="low">낮음</button><button data-v="mid">보통</button><button data-v="high">높음</button><button data-v="one">1회</button>
+    </div>
+    <label>알람 소리 크기 <span id="volTxt"></span></label>
+    <input type="range" id="vol" min="0.05" max="1" step="0.05">
+    <div class="row" style="margin-top:14px">
+      <button id="btnTest">알람 소리 테스트</button>
+      <button id="btnDemo">데모 실행</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>이번 감지 기록</h2>
+    <ul id="log"><li class="muted" style="list-style:none;margin-left:-18px">아직 없음</li></ul>
+    <h2 style="margin-top:16px">지난 이동 기록</h2>
+    <ul id="history"></ul>
+  </div>
+
+  <div class="card muted">
+    <b style="color:var(--text)">사용 팁</b>
+    <ul>
+      <li><b>이어폰을 끼고 쓰세요.</b> iPhone 웹앱은 진동을 울릴 수 없어서 알람은 소리로 나가요. 이어폰이 없으면 폰 스피커로 나가요.</li>
+      <li>폰은 얼굴 가까이(가슴 주머니, 무릎 위) 두세요. 이어폰 마이크가 입 가까이 있으면 더 정확해요.</li>
+      <li>잠금 버튼을 누르면 감지가 멈춰요. 화면은 켜 둔 채 <b>검은 화면</b>을 쓰세요.</li>
+      <li>녹음 파일은 만들지 않고, 소리는 폰 밖으로 나가지 않아요.</li>
+    </ul>
+  </div>
+</main>
+
+<div id="sleep"><div id="sleepTxt">감지 중 · 두 번 탭하면 돌아가요</div></div>
+
+<script>
+// ---------- 감지 파라미터 ----------
+const SENS = {
+  low:  { thresh: 12, need: 4, cv: 0.30 },   // thresh: 소음 대비 저음대역 상승 dB
+  mid:  { thresh: 8,  need: 4, cv: 0.35 },   // need: 연속 규칙 반복 횟수
+  high: { thresh: 6,  need: 3, cv: 0.40 },   // cv: 간격 불규칙성 허용치
+  one:  { thresh: 8,  need: 1, cv: 1 },      // 후보 소리 한 번이면 바로 알람 (오탐 많음)
+};
+const FRAME_MS = 50;
+const LOW_BAND = [60, 500], HIGH_BAND = [1000, 4000];
+const CALIB_SEC = 5;
+const EVENT_MIN = 0.25, EVENT_MAX = 3.0;       // 한 번의 코골이 소리 길이(초)
+const INTERVAL_MIN = 1.5, INTERVAL_MAX = 9;    // 숨 주기(초)
+const WINDOW_SEC = 45;
+const PLOT_SEC = 30;
+
+// ---------- 설정 저장 ----------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const settings = Object.assign({ sens: 'mid', volume: 0.4 }, store.get('settings', {}));
+
+// ---------- 감지기 ----------
+const median = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+
+function createDetector(p) {
+  return {
+    p, calib: [], calibHigh: [], floor: null, floorHigh: null,
+    inEvent: false, evStart: 0, evLow: 0, evHigh: 0, evN: 0, events: [], sLow: null, sHigh: null,
+    feed(t, rawLow, rawHigh) {
+      // 약 0.15초 평활: 한 번의 코골이가 여러 조각으로 쪼개지지 않게
+      this.sLow = this.sLow === null ? rawLow : this.sLow + (rawLow - this.sLow) * 0.3;
+      this.sHigh = this.sHigh === null ? rawHigh : this.sHigh + (rawHigh - this.sHigh) * 0.3;
+      const low = this.sLow, high = this.sHigh;
+      if (this.floor === null) {
+        this.calib.push(low); this.calibHigh.push(high);
+        if (t >= CALIB_SEC) { this.floor = median(this.calib); this.floorHigh = median(this.calibHigh); }
+        return { phase: 'calib', rise: 0 };
+      }
+      const rise = low - this.floor, riseHigh = high - this.floorHigh;
+      const r = { phase: 'listen', rise, snore: false, event: null };
+      if (!this.inEvent) {
+        if (rise > this.p.thresh) { this.inEvent = true; this.evStart = t; this.evLow = this.evHigh = this.evN = 0; }
+      } else if (rise < this.p.thresh - 3) {
+        this.inEvent = false;
+        const dur = t - this.evStart;
+        const lowRise = this.evLow / this.evN, highRise = this.evHigh / this.evN;
+        // 코골이: 적당한 길이 + 고음 쪽이 훨씬 더 커지는 소리(말소리·안내방송)는 제외
+        const ok = dur >= EVENT_MIN && dur <= EVENT_MAX && highRise - lowRise <= 4;
+        r.event = { start: this.evStart, ok };
+        if (ok) { this.events.push(this.evStart); r.snore = !this.evFired && this.checkRhythm(t); }
+        this.evFired = false;
+      }
+      if (this.inEvent) {
+        this.evLow += rise; this.evHigh += riseHigh; this.evN++;
+        // '1회' 모드: 소리가 끝나길 기다리지 않고 0.25초 이어지는 순간 바로 알람
+        if (this.p.need === 1 && !this.evFired && t - this.evStart >= EVENT_MIN
+            && (this.evHigh - this.evLow) / this.evN <= 4) {
+          this.evFired = true; r.snore = true;
+        }
+      }
+      // 배경 소음 추적: 내려갈 땐 빠르게, 올라갈 땐 천천히(약 17초)
+      this.floor += (low - this.floor) * (low < this.floor ? 0.05 : 0.003);
+      this.floorHigh += (high - this.floorHigh) * (high < this.floorHigh ? 0.05 : 0.003);
+      r.inEvent = this.inEvent;
+      return r;
+    },
+    checkRhythm(t) {
+      this.events = this.events.filter(s => t - s <= WINDOW_SEC);
+      const ev = this.events, need = this.p.need;
+      if (ev.length < need) return false;
+      if (need === 1) return true;
+      const regular = chain => {
+        const iv = chain.slice(1).map((e, i) => ev[e] - ev[chain[i]]);
+        const m = iv.reduce((a, b) => a + b, 0) / iv.length;
+        const sd = Math.sqrt(iv.reduce((a, b) => a + (b - m) ** 2, 0) / iv.length);
+        return sd / m <= this.p.cv;
+      };
+      // 방금 소리로 끝나는 규칙적 간격의 묶음을 찾음 — 사이에 낀 엉뚱한 소리(말, 기침, 한 번에 두 번 찍힌 점)는 건너뜀
+      const search = chain => {
+        if (chain.length === need) return regular(chain);
+        for (let i = chain[0] - 1; i >= 0; i--) {
+          const gap = ev[chain[0]] - ev[i];
+          if (gap < INTERVAL_MIN) continue;
+          if (gap > INTERVAL_MAX) break;
+          if (search([i, ...chain])) return true;
+        }
+        return false;
+      };
+      return search([ev.length - 1]);
+    },
+    recentGaps(t) {
+      const r = this.events.filter(s => t - s <= 20);
+      return r.slice(1).map((s, i) => s - r[i]);
+    },
+    recentCount(t) { return this.events.filter(s => t - s <= 20).length; },
+  };
+}
+
+// ---------- 데모 음원: 버스 소음 + 4초 간격 코골이 ----------
+function makeDemoSource(ctx) {
+  const sr = ctx.sampleRate, dur = 48, n = sr * dur;
+  const buf = ctx.createBuffer(1, n, sr), d = buf.getChannelData(0);
+  let seed = 7;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 * 2 - 1; };
+  let brown = 0;
+  for (let i = 0; i < n; i++) {
+    const tt = i / sr;
+    brown = (brown + 0.02 * rnd()) / 1.02;
+    d[i] = brown * 2.5 + 0.03 * Math.sin(2 * Math.PI * 90 * tt) * (1 + 0.3 * Math.sin(2 * Math.PI * 0.2 * tt));
+  }
+  const a = 1 - Math.exp(-2 * Math.PI * 300 / sr);
+  for (let t = 10; t + 1.2 < dur; t += 4 + 0.3 * rnd()) {
+    const s0 = Math.floor(t * sr), len = Math.floor(1.1 * sr);
+    let lp = 0;
+    for (let k = 0; k < len; k++) {
+      lp += a * (rnd() - lp);
+      const env = Math.sin(Math.PI * k / len), flutter = 0.6 + 0.4 * Math.sin(2 * Math.PI * 32 * k / sr);
+      d[s0 + k] += lp * env * flutter * 14;
+    }
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf; src.loop = true; src.start();
+  return src;
+}
+
+// ---------- 앱 상태 ----------
+const $ = s => document.querySelector(s);
+let ctx = null, stream = null, analyser = null, bins = null, timer = null, det = null;
+let t0 = 0, session = null, plot = [], marks = [], lastAlarm = -1e9, alarmUntil = 0, wakeLock = null, hiddenAt = 0, isDemo = false;
+
+function getCtx() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  return ctx;
+}
+
+function bandDb([lo, hi]) {
+  const hz = ctx.sampleRate / analyser.fftSize;
+  let sum = 0;
+  for (let i = Math.ceil(lo / hz); i <= Math.floor(hi / hz); i++) sum += 10 ** (bins[i] / 10);
+  return 10 * Math.log10(sum + 1e-20);
+}
+
+async function start(demo) {
+  const c = getCtx();
+  await c.resume();
+  let source;
+  try {
+    if (demo) source = makeDemoSource(c);
+    else {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      await c.resume();   // iPhone은 마이크를 켜는 순간 오디오를 잠시 멈출 수 있어 다시 깨움
+      source = c.createMediaStreamSource(stream);
+      stream.getAudioTracks()[0].onended = () => showNotice('마이크가 끊겼어요. 정지 후 다시 시작해 주세요.');
+    }
+  } catch (e) {
+    showNotice('마이크를 쓸 수 없어요. 브라우저의 마이크 권한을 허용해 주세요. (' + e.name + ')');
+    return;
+  }
+  isDemo = demo;
+  analyser = c.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0;
+  bins = new Float32Array(analyser.frequencyBinCount);
+  const mute = c.createGain(); mute.gain.value = 0;   // 일부 브라우저는 출력까지 연결해야 분석이 돌아감
+  source.connect(analyser); analyser.connect(mute); mute.connect(c.destination);
+  analyser._src = source;
+
+  det = createDetector(SENS[settings.sens]);
+  t0 = c.currentTime; plot = []; marks = []; lastAlarm = -1e9;
+  session = { start: Date.now(), hits: [], demo };
+  renderLog();
+  timer = setInterval(tick, FRAME_MS);
+  keepAwake();
+  $('#btnStart').hidden = true; $('#btnStop').hidden = false;
+  $('#btnDemo').disabled = true; $('#btnSleep').disabled = false;
+  hideNotice();
+}
+
+function stop() {
+  clearInterval(timer); timer = null;
+  if (analyser) { try { analyser._src.stop?.(); } catch {} analyser._src.disconnect(); analyser.disconnect(); }
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  if (session && !session.demo && Date.now() - session.start > 60000) {
+    const h = store.get('history', []);
+    h.unshift({ start: session.start, end: Date.now(), hits: session.hits.length });
+    store.set('history', h.slice(0, 20));
+  }
+  session = null;
+  exitSleep();
+  setStatus('대기 중', '', `정지했어요.`);
+  $('#btnStart').hidden = false; $('#btnStop').hidden = true;
+  $('#btnDemo').disabled = false; $('#btnSleep').disabled = true;
+  renderHistory();
+}
+
+function tick() {
+  analyser.getFloatFrequencyData(bins);
+  const t = ctx.currentTime - t0;
+  const r = det.feed(t, bandDb(LOW_BAND), bandDb(HIGH_BAND));
+  plot.push({ t, rise: r.rise, ev: r.inEvent });
+  while (plot.length && t - plot[0].t > PLOT_SEC) plot.shift();
+  if (r.event && r.event.ok) marks.push(r.event.start);
+  while (marks.length && t - marks[0] > PLOT_SEC) marks.shift();
+
+  if (r.snore) onSnore(t);
+
+  const el = Math.floor((Date.now() - session.start) / 1000);
+  $('#elapsed').textContent = Math.floor(el / 60) + ':' + String(el % 60).padStart(2, '0');
+  const demoTag = isDemo ? ' (데모)' : '';
+  if (r.phase === 'calib') setStatus('주변 소음 측정 중' + demoTag, '', `${Math.max(0, Math.ceil(CALIB_SEC - t))}초 뒤 감지를 시작해요. 조용히 있어 주세요.`);
+  else if (Date.now() < alarmUntil) setStatus('코골이 감지!', 'alarm', '코를 골고 있었어요. 자세를 바꿔 보세요.');
+  else {
+    const n = det.recentCount(t), gaps = det.recentGaps(t);
+    setStatus('듣는 중' + demoTag, 'listen', !n ? '코골이 패턴 없음'
+      : `저음 ${n}회 포착` + (gaps.length ? ` · 간격 ${gaps.map(g => g.toFixed(1)).join(' / ')}초` : '') + ` (${SENS[settings.sens].need}회 규칙적이면 감지)`);
+  }
+  draw();
+}
+
+function onSnore(t) {
+  det.events = [];
+  const now = new Date();
+  session.hits.push(now);
+  $('#count').textContent = session.hits.length;
+  renderLog();
+  alarmUntil = Date.now() + 5000;
+  if (t - lastAlarm >= 1.2) {   // 비프 3번(약 1초)이 겹치지 않을 만큼만 간격
+    lastAlarm = t;
+    playAlarm();
+  }
+}
+
+// ---------- 알람 ----------
+function playAlarm() {
+  const c = getCtx();
+  c.resume();
+  const now = c.currentTime;
+  for (let i = 0; i < 3; i++) {
+    const o = c.createOscillator(), g = c.createGain(), s = now + i * 0.35;
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0, s);
+    g.gain.linearRampToValueAtTime(settings.volume, s + 0.02);
+    g.gain.setValueAtTime(settings.volume, s + 0.2);
+    g.gain.linearRampToValueAtTime(0, s + 0.24);
+    o.connect(g); g.connect(c.destination);
+    o.start(s); o.stop(s + 0.25);
+  }
+  if (navigator.vibrate) navigator.vibrate([400, 150, 400, 150, 400]);   // Android만 동작
+  const sl = $('#sleep');
+  sl.classList.add('flash'); setTimeout(() => sl.classList.remove('flash'), 1200);
+}
+
+// ---------- 화면 ----------
+function setStatus(title, cls, sub) {
+  const s = $('#status');
+  if (s.textContent !== title) s.textContent = title;
+  s.className = cls;
+  $('#sub').textContent = sub;
+}
+
+function draw() {
+  const cv = $('#meter'), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth * dpr, h = cv.clientHeight * dpr;
+  if (cv.width !== w) { cv.width = w; cv.height = h; }
+  const g = cv.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  const now = plot.length ? plot[plot.length - 1].t : 0;
+  const x = t => w - (now - t) / PLOT_SEC * w;
+  const y = v => h - (Math.max(-5, Math.min(30, v)) + 5) / 35 * h;
+  const bw = Math.max(1, w / (PLOT_SEC * 1000 / FRAME_MS));
+  for (const p of plot) {
+    g.fillStyle = p.ev ? '#4cc38a' : '#2c5a45';
+    g.fillRect(x(p.t) - bw, y(p.rise), bw, h - y(p.rise));
+  }
+  const th = SENS[settings.sens].thresh;
+  g.strokeStyle = '#f5a524'; g.setLineDash([6 * dpr, 4 * dpr]); g.lineWidth = dpr;
+  g.beginPath(); g.moveTo(0, y(th)); g.lineTo(w, y(th)); g.stroke(); g.setLineDash([]);
+  g.fillStyle = '#e6edf3';
+  for (const m of marks) { g.beginPath(); g.arc(x(m), 8 * dpr, 3 * dpr, 0, 7); g.fill(); }
+}
+
+const fmt = d => d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+function renderLog() {
+  const ul = $('#log');
+  $('#count').textContent = session ? session.hits.length : 0;
+  ul.innerHTML = session && session.hits.length
+    ? session.hits.map(d => `<li>${fmt(d)} 코골이 감지</li>`).join('')
+    : '<li class="muted" style="list-style:none;margin-left:-18px">아직 없음</li>';
+}
+function renderHistory() {
+  const h = store.get('history', []);
+  $('#history').innerHTML = h.length
+    ? h.map(s => {
+        const d = new Date(s.start), min = Math.round((s.end - s.start) / 60000);
+        return `<li>${d.toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })} ${fmt(d)} · ${min}분 · 코골이 <b>${s.hits}회</b></li>`;
+      }).join('')
+    : '<li class="muted" style="list-style:none;margin-left:-18px">1분 이상 사용한 기록이 여기 남아요</li>';
+}
+
+function showNotice(msg) { const n = $('#notice'); n.textContent = msg; n.style.display = 'block'; }
+function hideNotice() { $('#notice').style.display = 'none'; }
+
+// ---------- 화면 꺼짐 방지 ----------
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
+  catch {}
+  if (!('wakeLock' in navigator)) showNotice('이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 설정 > 디스플레이 > 자동 잠금을 "안 함"으로 바꿔 주세요.');
+}
+document.addEventListener('visibilitychange', () => {
+  if (!timer) return;
+  if (document.visibilityState === 'hidden') hiddenAt = Date.now();
+  else {
+    keepAwake(); ctx.resume();
+    const sec = Math.round((Date.now() - hiddenAt) / 1000);
+    if (hiddenAt && sec > 5) showNotice(`화면이 꺼지거나 다른 앱으로 간 동안(약 ${Math.round(sec / 60) || 1}분) 감지가 멈췄어요.`);
+    hiddenAt = 0;
+  }
+});
+
+// ---------- 검은 화면 ----------
+let lastTap = 0;
+function enterSleep() { $('#sleep').style.display = 'flex'; }
+function exitSleep() { $('#sleep').style.display = 'none'; }
+$('#sleep').addEventListener('click', () => {
+  const now = Date.now();
+  if (now - lastTap < 400) exitSleep();
+  lastTap = now;
+});
+
+// ---------- 설정 UI ----------
+function renderSettings() {
+  document.querySelectorAll('#sens button').forEach(b => b.classList.toggle('on', b.dataset.v === settings.sens));
+  $('#vol').value = settings.volume;
+  $('#volTxt').textContent = Math.round(settings.volume * 100) + '%';
+}
+$('#sens').addEventListener('click', e => {
+  const v = e.target.dataset.v; if (!v) return;
+  settings.sens = v; store.set('settings', settings); renderSettings();
+  if (det) det.p = SENS[v];
+});
+$('#vol').addEventListener('input', e => { settings.volume = +e.target.value; store.set('settings', settings); renderSettings(); });
+
+$('#btnStart').onclick = () => start(false);
+$('#btnDemo').onclick = () => start(true);
+$('#btnStop').onclick = stop;
+$('#btnSleep').onclick = enterSleep;
+$('#btnTest').onclick = playAlarm;
+
+renderSettings();
+renderHistory();
+draw();
+</script>
+</body>
+</html>
