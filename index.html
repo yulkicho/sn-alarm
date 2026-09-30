@@ -49,6 +49,17 @@
   ul { margin: 0; padding-left: 18px; }
   li { margin: 2px 0; }
   .muted { color: var(--muted); font-size: 13px; }
+  .sess { border-top: 1px solid var(--line); padding: 10px 0; }
+  .sess:first-child { border-top: 0; }
+  .sess summary { cursor: pointer; }
+  .tl { position: relative; height: 14px; background: #0e141b; border-radius: 7px; margin: 10px 0 4px; }
+  .tl span { position: absolute; top: 2px; width: 4px; height: 10px; margin-left: -2px; background: var(--danger); border-radius: 2px; }
+  .tlx { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .hits { list-style: none; padding: 0; margin: 8px 0 0; }
+  .hits li { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  button.play { flex: none; min-width: 0; padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--text); font-size: 15px; }
+  .check input { width: 20px; height: 20px; }
   #sleep { position: fixed; inset: 0; background: #000; display: none; z-index: 10;
     align-items: flex-end; justify-content: center; padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 40px);
     color: #2a2a2a; font-size: 13px; text-align: center; }
@@ -88,6 +99,7 @@
     </div>
     <label>알람 소리 크기 <span id="volTxt"></span></label>
     <input type="range" id="vol" min="0.05" max="1" step="0.05">
+    <label class="check"><input type="checkbox" id="rec"> 감지 순간 녹음 저장 (앞 6초 + 뒤 4초)</label>
     <div class="row" style="margin-top:14px">
       <button id="btnTest">알람 소리 테스트</button>
       <button id="btnDemo">데모 실행</button>
@@ -96,9 +108,11 @@
 
   <div class="card">
     <h2>이번 감지 기록</h2>
-    <ul id="log"><li class="muted" style="list-style:none;margin-left:-18px">아직 없음</li></ul>
-    <h2 style="margin-top:16px">지난 이동 기록</h2>
-    <ul id="history"></ul>
+    <ul class="hits" id="log"></ul>
+    <h2 style="margin-top:16px">이동별 기록</h2>
+    <div id="history"></div>
+    <div class="row" style="margin-top:12px"><button id="btnClear">녹음 모두 삭제</button></div>
+    <div class="muted" id="storeInfo" style="margin-top:6px"></div>
   </div>
 
   <div class="card muted">
@@ -107,8 +121,9 @@
       <li><b>이어폰을 끼고 쓰세요.</b> iPhone 웹앱은 진동을 울릴 수 없어서 알람은 소리로 나가요. 이어폰이 없으면 폰 스피커로 나가요.</li>
       <li>폰은 얼굴 가까이(가슴 주머니, 무릎 위) 두세요. 이어폰 마이크가 입 가까이 있으면 더 정확해요.</li>
       <li>잠금 버튼을 누르면 감지가 멈춰요. 화면은 켜 둔 채 <b>검은 화면</b>을 쓰세요.</li>
-      <li>녹음 파일은 만들지 않고, 소리는 폰 밖으로 나가지 않아요.</li>
+      <li>녹음은 감지된 순간만, 이 폰 안에만 저장돼요(최근 60개). 어디로도 전송되지 않아요. 주변 사람 목소리가 섞일 수 있으니 필요 없으면 녹음 저장을 꺼 두세요.</li>
     </ul>
+    <div id="offline" style="margin-top:8px"></div>
   </div>
 </main>
 
@@ -135,7 +150,7 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
-const settings = Object.assign({ sens: 'mid', volume: 0.4 }, store.get('settings', {}));
+const settings = Object.assign({ sens: 'mid', volume: 0.4, record: true }, store.get('settings', {}));
 
 // ---------- 감지기 ----------
 const median = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
@@ -284,10 +299,11 @@ async function start(demo) {
   const mute = c.createGain(); mute.gain.value = 0;   // 일부 브라우저는 출력까지 연결해야 분석이 돌아감
   source.connect(analyser); analyser.connect(mute); mute.connect(c.destination);
   analyser._src = source;
+  startRecorder(c, source, mute);
 
   det = createDetector(SENS[settings.sens]);
   t0 = c.currentTime; plot = []; marks = []; lastAlarm = -1e9;
-  session = { start: Date.now(), hits: [], demo };
+  session = { start: Date.now(), hits: [], demo, savedAt: Date.now() };
   renderLog();
   timer = setInterval(tick, FRAME_MS);
   keepAwake();
@@ -298,16 +314,14 @@ async function start(demo) {
 
 function stop() {
   clearInterval(timer); timer = null;
+  stopRecorder();
   if (analyser) { try { analyser._src.stop?.(); } catch {} analyser._src.disconnect(); analyser.disconnect(); }
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
-  if (session && !session.demo && Date.now() - session.start > 60000) {
-    const h = store.get('history', []);
-    h.unshift({ start: session.start, end: Date.now(), hits: session.hits.length });
-    store.set('history', h.slice(0, 20));
-  }
+  saveSession();
   session = null;
+  renderLog();
   exitSleep();
   setStatus('대기 중', '', `정지했어요.`);
   $('#btnStart').hidden = false; $('#btnStop').hidden = true;
@@ -325,6 +339,7 @@ function tick() {
   while (marks.length && t - marks[0] > PLOT_SEC) marks.shift();
 
   if (r.snore) onSnore(t);
+  if (Date.now() - session.savedAt > 30000) saveSession();   // 정지 안 하고 앱을 닫아도 기록이 남도록
 
   const el = Math.floor((Date.now() - session.start) / 1000);
   $('#elapsed').textContent = Math.floor(el / 60) + ':' + String(el % 60).padStart(2, '0');
@@ -341,9 +356,10 @@ function tick() {
 
 function onSnore(t) {
   det.events = [];
-  const now = new Date();
-  session.hits.push(now);
-  $('#count').textContent = session.hits.length;
+  const id = Date.now();
+  session.hits.push(id);
+  captureClip(id);
+  saveSession();
   renderLog();
   alarmUntil = Date.now() + 5000;
   if (t - lastAlarm >= 1.2) {   // 비프 3번(약 1초)이 겹치지 않을 만큼만 간격
@@ -401,23 +417,181 @@ function draw() {
   for (const m of marks) { g.beginPath(); g.arc(x(m), 8 * dpr, 3 * dpr, 0, 7); g.fill(); }
 }
 
-const fmt = d => d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+const fmt = ms => new Date(ms).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+const hitsOf = sess => Array.isArray(sess.hits) ? sess.hits : [];   // 예전 기록은 횟수만 있음
+function hitItems(sess) {
+  return hitsOf(sess).map(ms => {
+    const min = Math.round((ms - sess.start) / 60000);
+    const btn = clipIds.has(ms) ? `<button class="play" data-clip="${ms}">▶ 듣기</button>`
+      : (pendingClip(ms) ? '<span class="muted">녹음 중…</span>' : '');
+    return `<li>${fmt(ms)} <span class="muted">(시작 후 ${min}분)</span> ${btn}</li>`;
+  }).join('');
+}
 function renderLog() {
-  const ul = $('#log');
   $('#count').textContent = session ? session.hits.length : 0;
-  ul.innerHTML = session && session.hits.length
-    ? session.hits.map(d => `<li>${fmt(d)} 코골이 감지</li>`).join('')
-    : '<li class="muted" style="list-style:none;margin-left:-18px">아직 없음</li>';
+  $('#log').innerHTML = session && session.hits.length ? hitItems(session) : '<li class="muted">아직 없음</li>';
 }
 function renderHistory() {
   const h = store.get('history', []);
   $('#history').innerHTML = h.length
-    ? h.map(s => {
-        const d = new Date(s.start), min = Math.round((s.end - s.start) / 60000);
-        return `<li>${d.toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' })} ${fmt(d)} · ${min}분 · 코골이 <b>${s.hits}회</b></li>`;
+    ? h.map((sess, i) => {
+        const hits = hitsOf(sess), n = Array.isArray(sess.hits) ? hits.length : sess.hits;
+        const dur = Math.max(1, sess.end - sess.start), min = Math.round(dur / 60000);
+        const sd = new Date(sess.start), day = `${sd.getMonth() + 1}/${sd.getDate()}`;
+        const first = hits.length ? ` · 첫 감지 ${Math.round((hits[0] - sess.start) / 60000)}분 후` : '';
+        return `<details class="sess"${i === 0 ? ' open' : ''}>
+          <summary>${day} ${fmt(sess.start)} · ${min}분 · ${n ? `코골이 <b>${n}회</b>` : '코골이 없음'}${first}</summary>
+          <div class="tl">${hits.map(ms => `<span style="left:${((ms - sess.start) / dur * 100).toFixed(1)}%"></span>`).join('')}</div>
+          <div class="tlx"><span>${fmt(sess.start)} 시작</span><span>${fmt(sess.end)}</span></div>
+          <ul class="hits">${hitItems(sess)}</ul>
+        </details>`;
       }).join('')
-    : '<li class="muted" style="list-style:none;margin-left:-18px">1분 이상 사용한 기록이 여기 남아요</li>';
+    : '<div class="muted">1분 이상 사용한 이동이 여기 남아요</div>';
+  $('#storeInfo').textContent = clipIds.size ? `저장된 녹음 ${clipIds.size}개` : '';
 }
+
+function saveSession() {
+  if (!session || session.demo) return;
+  session.savedAt = Date.now();
+  if (Date.now() - session.start < 60000 && !session.hits.length) return;
+  const h = store.get('history', []).filter(x => x.start !== session.start);
+  h.unshift({ start: session.start, end: Date.now(), hits: [...session.hits] });
+  store.set('history', h.slice(0, 20));
+  renderHistory();
+}
+window.addEventListener('pagehide', saveSession);
+
+// ---------- 감지 순간 녹음 (폰 안에만 저장) ----------
+const PRE_SEC = 6, POST_SEC = 4, MAX_CLIPS = 60;
+let rec = null, clipIds = new Set(), player = null;
+
+const idb = (() => {
+  let db;
+  const open = () => db || (db = new Promise((res, rej) => {
+    const r = indexedDB.open('snore-alarm', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('clips', { keyPath: 'id' });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const run = async (mode, fn) => {
+    const d = await open();
+    return new Promise((res, rej) => {
+      const t = d.transaction('clips', mode), req = fn(t.objectStore('clips'));
+      t.oncomplete = () => res(req && req.result); t.onerror = () => rej(t.error);
+    });
+  };
+  return {
+    put: v => run('readwrite', st => st.put(v)),
+    get: id => run('readonly', st => st.get(id)),
+    keys: () => run('readonly', st => st.getAllKeys()),
+    del: id => run('readwrite', st => st.delete(id)),
+    clear: () => run('readwrite', st => st.clear()),
+  };
+})();
+
+function startRecorder(c, source, out) {
+  const node = c.createScriptProcessor(4096, 1, 1);
+  rec = { node, source, sr: c.sampleRate, ring: new Float32Array(Math.ceil(c.sampleRate * PRE_SEC)), w: 0, pending: [] };
+  node.onaudioprocess = e => {
+    const x = e.inputBuffer.getChannelData(0), ring = rec.ring;
+    for (const p of rec.pending) { p.post.push(new Float32Array(x)); p.n += x.length; }
+    for (let i = 0; i < x.length; i++) { ring[rec.w] = x[i]; rec.w = (rec.w + 1) % ring.length; }
+    const done = rec.pending.filter(p => p.n >= POST_SEC * rec.sr);
+    rec.pending = rec.pending.filter(p => p.n < POST_SEC * rec.sr);
+    done.forEach(finishClip);
+  };
+  source.connect(node); node.connect(out);
+}
+function stopRecorder() {
+  if (!rec) return;
+  rec.pending.forEach(finishClip);   // 녹음 도중 정지하면 있는 만큼 저장
+  rec.pending = [];
+  rec.source.disconnect(rec.node); rec.node.disconnect(); rec.node.onaudioprocess = null;
+  rec = null;
+}
+const pendingClip = id => rec && rec.pending.some(p => p.id === id);
+
+function captureClip(id) {
+  if (!rec || !settings.record) return;
+  const ring = rec.ring, pre = new Float32Array(ring.length);
+  pre.set(ring.subarray(rec.w)); pre.set(ring.subarray(0, rec.w), ring.length - rec.w);
+  rec.pending.push({ id, pre, post: [], n: 0, sr: rec.sr, session: session.start });
+}
+
+async function finishClip(p) {
+  const all = new Float32Array(p.pre.length + p.n);
+  all.set(p.pre); let o = p.pre.length;
+  for (const b of p.post) { all.set(b, o); o += b.length; }
+  try {
+    await idb.put({ id: p.id, session: p.session, wav: encodeWav(all, p.sr) });
+    clipIds.add(p.id);
+    await trimClips();
+  } catch (e) { showNotice('녹음을 저장하지 못했어요 (' + e.name + ')'); }
+  renderLog(); renderHistory();
+}
+
+// 16kHz 모노 WAV, 조용한 소리도 들리게 음량 자동 맞춤
+function encodeWav(x, sr) {
+  const k = Math.max(1, Math.floor(sr / 16000)), n = Math.floor(x.length / k), rate = Math.round(sr / k);
+  let peak = 1e-6;
+  for (let i = 0; i < x.length; i++) peak = Math.max(peak, Math.abs(x[i]));
+  const gain = Math.min(20, 0.9 / peak);
+  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < k; j++) sum += x[i * k + j];
+    v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, sum / k * gain)) * 32767, true);
+  }
+  return buf;
+}
+
+// 기록에 없는 녹음(데모 등)과 60개 넘는 오래된 녹음 정리
+async function trimClips() {
+  const keep = new Set(store.get('history', []).flatMap(hitsOf));
+  if (session) session.hits.forEach(ms => keep.add(ms));
+  const ids = [...clipIds].sort((a, b) => a - b);
+  for (const id of ids) {
+    if (!keep.has(id) || clipIds.size > MAX_CLIPS) { await idb.del(id); clipIds.delete(id); }
+  }
+}
+
+async function playClip(id, btn) {
+  const same = player && player._id === id;
+  if (player) {
+    player.pause(); URL.revokeObjectURL(player.src); player = null;
+    document.querySelectorAll('button.play').forEach(b => { b.textContent = '▶ 듣기'; });
+  }
+  if (same) return;   // 재생 중에 다시 누르면 멈춤
+  const c = await idb.get(id);
+  if (!c) return;
+  player = new Audio(URL.createObjectURL(new Blob([c.wav], { type: 'audio/wav' })));
+  player._id = id;
+  player.onended = () => { btn.textContent = '▶ 듣기'; player = null; };
+  btn.textContent = '■ 멈춤';
+  player.play();
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('button.play');
+  if (b) playClip(+b.dataset.clip, b);
+});
+
+let clearArmed = 0;
+$('#btnClear').onclick = async () => {
+  const b = $('#btnClear');
+  if (Date.now() - clearArmed > 3000) {   // 실수 방지: 3초 안에 한 번 더 눌러야 삭제
+    clearArmed = Date.now(); b.textContent = '한 번 더 누르면 삭제돼요';
+    setTimeout(() => { b.textContent = '녹음 모두 삭제'; }, 3000);
+    return;
+  }
+  clearArmed = 0;
+  await idb.clear(); clipIds.clear();
+  b.textContent = '삭제했어요';
+  renderLog(); renderHistory();
+};
 
 function showNotice(msg) { const n = $('#notice'); n.textContent = msg; n.style.display = 'block'; }
 function hideNotice() { $('#notice').style.display = 'none'; }
@@ -454,7 +628,9 @@ function renderSettings() {
   document.querySelectorAll('#sens button').forEach(b => b.classList.toggle('on', b.dataset.v === settings.sens));
   $('#vol').value = settings.volume;
   $('#volTxt').textContent = Math.round(settings.volume * 100) + '%';
+  $('#rec').checked = settings.record;
 }
+$('#rec').addEventListener('change', e => { settings.record = e.target.checked; store.set('settings', settings); });
 $('#sens').addEventListener('click', e => {
   const v = e.target.dataset.v; if (!v) return;
   settings.sens = v; store.set('settings', settings); renderSettings();
@@ -469,8 +645,16 @@ $('#btnSleep').onclick = enterSleep;
 $('#btnTest').onclick = playAlarm;
 
 renderSettings();
+renderLog();
 renderHistory();
 draw();
+idb.keys().then(k => { clipIds = new Set(k); return trimClips(); }).then(() => { renderLog(); renderHistory(); }).catch(() => {});
+
+// ---------- 오프라인 실행 ----------
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.ready.then(() => { $('#offline').textContent = '✓ 오프라인에서도 실행할 수 있어요'; });
+}
 </script>
 </body>
 </html>
